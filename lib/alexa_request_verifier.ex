@@ -1,153 +1,241 @@
 defmodule AlexaRequestVerifier do
   @moduledoc """
-  AlexaRequestVerifier verifies an Amazon Alexa Skills request to a Pheonix server.  
+  AlexaRequestVerifier verifies an Amazon Alexa Skills request to a
+  Phoenix server.
 
-To add the request, you will need to make 4 changes:
+  There are two options for verifying a request: Manually and automatically.
 
-1. mix.exs - the package can be installed by adding `alexa_request_verifier` to your list of dependencies in `mix.exs`:
+  To automatically verify the request using the verifier as a plug, you will
+  need to make 3 changes:
 
+  1. You will need to add AlexaRequestVerifier as an application in `mix.exs`
 
-    def deps do
-      [{:alexa_request_verifier, "~> 0.1.3"}]
-    end
+  ```elixir
+      applications: [..., :pylon_alexa_request_verifier]
+  ```
 
-2. You will need to add AlexaRequestVerifier as an application in your mix.js
+  2.  You will need to modify your `endpoint.ex` file by adding the
+      JSONRawBodyParser as follows:
 
+  ```elixir
+      parsers: [AlexaRequestVerifier.JSONRawBodyParser, :urlencoded,
+                :multipart, :json],
+  ```
 
-      applications: [..., :alexa_request_verifier] 
+  The parser is needed to collect the raw body of the request as that is needed
+  to verify the signature.
 
+  3. You will need to add the verifier plug to your pipeline in your
+     router.ex file:
 
-3.  You will need to modify your endpoint.ex file by adding the JSONRawBody Parser as follows:
-
-      parsers: [AlexaRequestVerifier.JSONRawBodyParser, :urlencoded, :multipart, :json],
-
-The parser is needed to collect the raw body of the request as that is needed to verify the signature.
-
-4. You will need to add the verifier plug to your pipeline in your router.ex file
-
+  ```elixir
   pipeline :alexa_api do
       plug :accepts, ["json"]
       plug AlexaRequestVerifier
   end
-
+  ```
   """
 
-
-  import Plug.Conn
-
+  alias AlexaRequestVerifier.CertCache
   alias Plug.Conn
 
   require Logger
- @amazon_echo_dns "echo-api.amazon.com"
- @sig_header  "signature"
- @sig_chain_header "signaturecertchainurl"
+
+  @amazon_echo_dns "echo-api.amazon.com"
+  @sig_header "signature"
+  @sig_chain_header "signaturecertchainurl"
 
   def init(opts), do: opts
 
-
   def call(conn, _opts) do
+    case conn.private[:alexa_verify_test_disable] do
+      true ->
+        conn
 
-   case conn.private[:alexa_verify_test_disable] do
-     true ->
-      conn
-     _ ->
+      _ ->
+        conn = verify_request(conn)
 
-    conn = conn  
-    |> get_validated_cert
-    |> verify_time
-    |> verify_signature
-      
-    if conn.private[:alexa_verify_error] do 
-      Logger.debug("alexa_request_verifier: #{conn.private[:alexa_verify_error]}")
-      conn
-        |> send_resp(401, conn.private[:alexa_verify_error])
-        |> halt
-    else
-      conn
-      end
-   end   
+        if conn.private[:alexa_verify_error] do
+          Logger.debug(
+            "alexa_request_verifier error",
+            error: conn.private[:alexa_verify_error]
+          )
 
-
-  end
-
-  def get_validated_cert(conn) do
-     case Plug.Conn.get_req_header(conn, @sig_chain_header) do
-   
-      [] ->  Conn.put_private(conn, :alexa_verify_error, "no request parameter named #{@sig_chain_header}" )
-      [cert_url] -> cert_url = cert_url
-
-        cert = ConCache.get(:cert_signature_cache, cert_url)
-        if is_nil(cert) do
-          cert = fetch_cert(cert_url)
-        case validate_cert(cert) do
-
-        {:ok, _} ->
-            Logger.debug("alexa_request_verifier: setting cache for #{cert_url}")
-            ConCache.put(:cert_signature_cache, cert_url, cert)
-
-            Conn.put_private(conn,:signing_cert, cert)
-              
-        {:error, reason} ->
-            Logger.debug("alexa_request_verifier: got error -  #{reason}")
-            Conn.put_private(conn, :alexa_verify_error, reason )
-              
-          end
+          conn
+          |> Conn.send_resp(401, conn.private[:alexa_verify_error])
+          |> Conn.halt()
         else
-          Conn.put_private(conn,:signing_cert, cert)
+          conn
         end
     end
-end
-
-  
-
-@doc """
-  takes a string and confirms URL is in scheme https, has a s3.amazonaws.com host, is port 443 and has a path starting with /echo.api/
-
-"""
-
-  def is_correct_alexa_url?(url) when is_binary(url) do
-      is_correct_alexa_url?(URI.parse(url))
-
   end
-  
+
+  @doc """
+  Run all functions required to verify an incoming request as originating
+  from Amazon, storing an error message in the connection's private params
+  if validation fails.
+  """
+  @spec verify_request(conn :: Conn.t()) :: Conn.t()
+  def verify_request(conn) do
+    conn
+    |> populate_cert()
+    |> verify_time()
+    |> verify_signature()
+  end
+
+  @doc """
+  Retrieve a valid Amazon certificate, either from the cache or
+  from source, and store it in the connection's private params.
+  """
+  @spec populate_cert(conn :: Conn.t()) :: Conn.t()
+  def populate_cert(conn) do
+    case Conn.get_req_header(conn, @sig_chain_header) do
+      [] ->
+        Conn.put_private(
+          conn,
+          :alexa_verify_error,
+          "no request parameter named #{@sig_chain_header}"
+        )
+
+      [cert_url] ->
+        cert_url = cert_url
+
+        cert = CertCache.get_cert(cert_url)
+
+        if is_nil(cert) do
+          cert = fetch_cert(cert_url)
+
+          case validate_cert(cert) do
+            {:ok, _} ->
+              Logger.debug(
+                "alexa_request_verifier: caching url",
+                cert_url: cert_url
+              )
+
+              CertCache.store(cert_url, cert)
+              Conn.put_private(conn, :signing_cert, cert)
+
+            {:error, reason} ->
+              Logger.debug(
+                "alexa_request_verifier validation error",
+                validation_error: reason
+              )
+
+              Conn.put_private(conn, :alexa_verify_error, reason)
+          end
+        else
+          Conn.put_private(conn, :signing_cert, cert)
+        end
+    end
+  end
+
+  defp fetch_cert(url) do
+    if is_correct_alexa_url?(url) do
+      {:ok, resp} =
+        :httpc.request(
+          :get,
+          {String.to_charlist(url), []},
+          [],
+          body_format: :binary
+        )
+
+      {_, _headers, certificate_chain_bin} = resp
+      cert_chain = :public_key.pem_decode(certificate_chain_bin)
+
+      Enum.map(
+        cert_chain,
+        fn {_, bin, _} -> bin end
+      )
+    else
+      {:error, "invalid sig chain url"}
+    end
+  end
+
+  @doc """
+  Determines whether a request URL represents a valid
+  Alexa request.
+  """
+  @spec is_correct_alexa_url?(url :: String.t() | URI.t()) :: boolean
+  def is_correct_alexa_url?(url) when is_binary(url) do
+    is_correct_alexa_url?(URI.parse(url))
+  end
 
   def is_correct_alexa_url?(url) when is_nil(url) do
-      false
+    false
   end
 
-
-  def is_correct_alexa_url?(%URI{port: 443, host: "s3.amazonaws.com", scheme: "https", path: "/echo.api/" <> _extra}) do
-      true  
+  def is_correct_alexa_url?(%URI{
+        port: 443,
+        host: "s3.amazonaws.com",
+        scheme: "https",
+        path: "/echo.api/" <> _extra
+      }) do
+    true
   end
 
   def is_correct_alexa_url?(_everything_else) do
-      false  
+    false
   end
 
+  defp validate_cert(err = {:error, _reason}) do
+    err
+  end
 
-  def fetch_cert(url) do
-    if(!is_correct_alexa_url?(url)) do
-      {:error, "invalid sig chain url"}
+  defp validate_cert(cert) do
+    cert
+    |> validate_cert_chain()
+    |> validate_cert_domain()
+  end
+
+  defp validate_cert_chain(cert) do
+    reversed = Enum.reverse(cert)
+    last_root = CertCache.get_last_root()
+
+    if last_root && validate_root(last_root, reversed) do
+      {:ok, cert}
     else
+      roots = :certifi.cacerts()
 
-      {:ok, resp} = :httpc.request(:get, {String.to_charlist(url), []}, [], [body_format: :binary])
-      {_, _headers, certificate_chain_bin} = resp
-      cert_chain = :public_key.pem_decode(certificate_chain_bin)
-      Enum.map(cert_chain,
-        fn {_, bin, _} -> bin
-      end)
+      valid =
+        Enum.find(
+          roots,
+          fn root -> validate_root(root, reversed) == :ok end
+        )
 
-    end  
-  end 
+      if valid do
+        CertCache.store_root(valid)
+        {:ok, cert}
+      else
+        {:error, "no valid root found"}
+      end
+    end
+  end
 
+  defp validate_root(root, cert) do
+    case :public_key.pkix_path_validation(
+           root,
+           cert,
+           verify_fun: {&verify_fun/3, {}}
+         ) do
+      {:ok, {_public_key_info, _policy_tree}} -> :ok
+      {:error, {:bad_cert, _reason}} -> :error
+    end
+  end
 
-  def verify_fun(_, {:extension, _}, state) do
+  @doc """
+  Verify function sent to Erlang's :public_key module for path validation.
+  """
+  @spec verify_fun(cert :: map, event :: {atom, atom | map}, state :: term()) ::
+          {atom, any}
+  def verify_fun(_cert, {:extension, _}, state) do
     {:unknown, state}
   end
-  def verify_fun(_, {:bad_cert, reason}, _state) do
+
+  def verify_fun(_cert, {:bad_cert, reason}, _state) do
     {:fail, reason}
   end
-  def verify_fun(_, {:revoked, _}, _state) do
+
+  def verify_fun(_cert, {:revoked, _}, _state) do
     {:fail, :revoked}
   end
 
@@ -155,129 +243,97 @@ end
     {:unknown, state}
   end
 
-
-
-
-@doc """
-  Validates the cert checks for hostname, checks that the cert has a valid key, etc... 
-
-"""
-
-  def validate_cert_chain(cert) do 
- 
-
-    {:ok, resp} = :httpc.request(:get, {'https://www.symantec.com/content/dam/symantec/docs/other-resources/verisign-class-3-public-primary-certification-authority-g5-en.pem', []}, [], [body_format: :binary])
-    {_, _headers, root_cert_bin} = resp
-
- #   {:ok, root_cert_bin} = :file.read_file("./auth_root.pem")
-    [{_, root_cer, _}] = :public_key.pem_decode(root_cert_bin)
-
-    case :public_key.pkix_path_validation(root_cer, Enum.reverse(cert),
-          [{:verify_fun, {&__MODULE__.verify_fun/3, {}}}]) do
-      {:ok, {_public_key_info, _policy_tree}} ->
-        {:ok, cert}
-      {:error, {:bad_cert, reason}} ->
-
-        {:error, reason}
-    end
-  end
-  
-  def validate_cert(err = {:error, _reason}) do
-      err
-  end
- 
-  def validate_cert(cert)  do
-
-      validate_cert_chain(cert) 
-      |> validate_cert_domain
- end
-
-  def validate_cert_domain(error = {:error, _reason}) do 
-    error  
+  defp validate_cert_domain(error = {:error, _reason}) do
+    error
   end
 
-  def validate_cert_domain({:ok, cert}) do 
-    [first|_tail] = cert
-    if :public_key.pkix_verify_hostname(first, [{:dns_id, @amazon_echo_dns}])  do
+  defp validate_cert_domain({:ok, cert}) do
+    [first | _tail] = cert
+
+    if :public_key.pkix_verify_hostname(first, [{:dns_id, @amazon_echo_dns}]) do
       {:ok, cert}
     else
       {:error, "invalid DNS"}
     end
-
-  end
- 
-
-  def is_datetime_valid?(datetime_string) when is_binary(datetime_string) do
-      case NaiveDateTime.from_iso8601(datetime_string) do
-        {:ok, datetime} ->
-          is_datetime_valid?(datetime)
-        {:error, _reason} ->
-          false
-      end
-  end
-
-
- def is_datetime_valid?(datetime = %NaiveDateTime{}) do
-    min = 150 # minimum number of seconds
-   NaiveDateTime.diff(NaiveDateTime.utc_now(),
-     datetime, :second) <= min
-end
-
-def is_datetime_valid?(datetime) when is_nil(datetime) do
-    false
-end
-
-
-
- @doc """
-    given a Plug.Conn that has a valid Alexa request request/timestamp, it will confirm the timestamp is valid
-  """
-
-  def verify_time(conn) do 
-     params = conn.body_params
-     timestamp = params["request"]["timestamp"]
-    case is_datetime_valid?(timestamp) do
-      true ->
-        conn
-      false ->
-          Conn.put_private(conn, :alexa_verify_error, "invalid timestamp" )
-    end
-     conn
   end
 
   @doc """
-    Assuming :raw_body, :signing_cert, and signature header, it will verify the signature
+    given a Plug.Conn that has a valid Alexa request request/timestamp,
+    confirms that the timestamp is valid
   """
+  @spec verify_time(conn :: Conn.t()) :: Conn.t()
+  def verify_time(conn) do
+    params = conn.body_params
+    timestamp = params["request"]["timestamp"]
 
-  
-  def verify_signature(conn) do
-    case conn.private[:signing_cert] do
-     
-     nil-> 
-      Conn.put_private(conn, :alexa_verify_error, "invalid certificate" )
-     _ ->
-      verify_signature_with_valid_cert(conn)
+    case is_datetime_valid?(timestamp) do
+      true ->
+        conn
+
+      false ->
+        Conn.put_private(conn, :alexa_verify_error, "invalid timestamp")
     end
- 
+
+    conn
   end
 
-  def verify_signature_with_valid_cert(conn) do 
+  @doc """
+  Determines if a request's timestamp is valid.
+  """
+  @spec is_datetime_valid?(datetime :: String.t() | NaiveDateTime.t() | nil) ::
+          boolean
+  def is_datetime_valid?(datetime) when is_nil(datetime), do: false
 
-   message = conn.private[:raw_body]
-   case Plug.Conn.get_req_header(conn, @sig_header) do
-    []  ->   Conn.put_private(conn, :alexa_verify_error, "no signature" )
-    [signature] ->
-      {:ok, signature} = Base.decode64(signature)
-      [first|_tail] = conn.private[:signing_cert]
-      decoded = :public_key.pkix_decode_cert(first,:otp)
-      public_key_der = decoded |> elem(1) |> elem(7) |> elem(2)
+  def is_datetime_valid?(datetime_string) when is_binary(datetime_string) do
+    case NaiveDateTime.from_iso8601(datetime_string) do
+      {:ok, datetime} ->
+        is_datetime_valid?(datetime)
 
-      if(!is_nil(public_key_der) and :public_key.verify(message, :sha, signature, public_key_der)) do
-        Logger.debug("alexa_request_verifier: Signature of Alexa request is valid for this message.")
-        conn
-      else
-        Conn.put_private(conn, :alexa_verify_error, "signature did not match" )
-      end
-   end
- end
+      {:error, _reason} ->
+        false
+    end
+  end
+
+  def is_datetime_valid?(datetime = %NaiveDateTime{}) do
+    # minimum number of seconds
+    min = 150
+    NaiveDateTime.diff(NaiveDateTime.utc_now(), datetime, :second) <= min
+  end
+
+  @doc """
+    Assuming :raw_body, :signing_cert, and signature header,
+    verifies the signature
+  """
+  @spec verify_signature(conn :: Conn.t()) :: Conn.t()
+  def verify_signature(conn) do
+    case conn.private[:signing_cert] do
+      nil ->
+        Conn.put_private(conn, :alexa_verify_error, "invalid certificate")
+
+      _ ->
+        verify_signature_with_valid_cert(conn)
+    end
+  end
+
+  defp verify_signature_with_valid_cert(conn) do
+    message = conn.private[:raw_body]
+
+    case Conn.get_req_header(conn, @sig_header) do
+      [] ->
+        Conn.put_private(conn, :alexa_verify_error, "no signature")
+
+      [signature] ->
+        {:ok, signature} = Base.decode64(signature)
+        [first | _tail] = conn.private[:signing_cert]
+        decoded = :public_key.pkix_decode_cert(first, :otp)
+        public_key_der = decoded |> elem(1) |> elem(7) |> elem(2)
+
+        if !is_nil(public_key_der) &&
+             :public_key.verify(message, :sha, signature, public_key_der) do
+          conn
+        else
+          Conn.put_private(conn, :alexa_verify_error, "signature did not match")
+        end
+    end
+  end
 end

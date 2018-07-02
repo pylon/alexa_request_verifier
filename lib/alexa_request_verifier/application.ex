@@ -8,11 +8,8 @@ defmodule AlexaRequestVerifier.Application do
   def start(_type, _args) do
     import Supervisor.Spec, warn: false
 
-    # Define workers and child supervisors to be supervised
     children = [
-      # Starts a worker by calling: AlexaRequestVerifier.Worker.start_link(arg1, arg2, arg3)
-      # worker(AlexaRequestVerifier.Worker, [arg1, arg2, arg3]),
-       supervisor(ConCache, [[], [name: :cert_signature_cache]])
+      supervisor(AlexaRequestVerifier.CertCache, [])
     ]
 
     # See http://elixir-lang.org/docs/stable/elixir/Supervisor.html
