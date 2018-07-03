@@ -18,16 +18,11 @@ defmodule AlexaRequestVerifier.CertCache do
   """
   @spec get_cert(cert_url :: String.t()) :: String.t() | nil
   def get_cert(cert_url) do
-    GenServer.call(@server, {:fetch, cert_url})
-  end
-
-  @doc """
-  Return either the last successfully verified root certificate,
-  or nil if this is the first time the cache has been accessed.
-  """
-  @spec get_last_root() :: String.t() | nil
-  def get_last_root do
-    GenServer.call(@server, {:fetch, "root"})
+    # check the cache before calling the server
+    case :ets.lookup(@table, cert_url) do
+      [{_url, cert}] -> cert
+      [] -> GenServer.call(@server, {:fetch, cert_url})
+    end
   end
 
   @doc """
@@ -36,14 +31,6 @@ defmodule AlexaRequestVerifier.CertCache do
   @spec store(cert_url :: String.t(), cert_chain :: [String.t()]) :: :ok
   def store(cert_url, cert_chain) do
     GenServer.call(@server, {:store, cert_url, cert_chain})
-  end
-
-  @doc """
-  Store a successfully verified root certificate in the cache for next time.
-  """
-  @spec store_root(cert :: String.t()) :: :ok
-  def store_root(cert) do
-    GenServer.call(@server, {:store, "root", cert})
   end
 
   # server process
@@ -60,8 +47,8 @@ defmodule AlexaRequestVerifier.CertCache do
   def handle_call({:fetch, cert_url}, _from, state) do
     data =
       case :ets.lookup(@table, cert_url) do
-        [] -> nil
         [{_url, cert}] -> cert
+        [] -> nil
       end
 
     {:reply, data, state}

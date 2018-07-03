@@ -177,7 +177,7 @@ defmodule AlexaRequestVerifier do
     false
   end
 
-  defp validate_cert(err = {:error, _reason}) do
+  defp validate_cert({:error, _reason} = err) do
     err
   end
 
@@ -189,36 +189,45 @@ defmodule AlexaRequestVerifier do
 
   defp validate_cert_chain(cert) do
     reversed = Enum.reverse(cert)
-    last_root = CertCache.get_last_root()
+    roots = :certifi.cacerts()
 
-    if last_root && validate_root(last_root, reversed) do
+    if validate_unordered(reversed, roots) do
       {:ok, cert}
     else
-      roots = :certifi.cacerts()
+      {:error, "no valid root found"}
+    end
+  end
 
-      valid =
-        Enum.find(
-          roots,
-          fn root -> validate_root(root, reversed) == :ok end
-        )
+  defp validate_unordered([], _), do: true
 
-      if valid do
-        CertCache.store_root(valid)
-        {:ok, cert}
-      else
-        {:error, "no valid root found"}
-      end
+  defp validate_unordered(untrusted, trusted) do
+    # we can't always assume that Amazon will give us their certs in order;
+    # the iteration is performed with a reversed list of the incoming
+    # certificates in the hope that it will be, but this ensures validation
+    # even if the chain is out of order
+    valid =
+      Enum.find(
+        untrusted,
+        fn cert -> Enum.find(trusted, &validate_root(&1, cert)) end
+      )
+
+    if valid do
+      untrusted
+      |> List.delete(valid)
+      |> validate_unordered([valid | trusted])
+    else
+      false
     end
   end
 
   defp validate_root(root, cert) do
     case :public_key.pkix_path_validation(
            root,
-           cert,
+           [cert],
            verify_fun: {&verify_fun/3, {}}
          ) do
-      {:ok, {_public_key_info, _policy_tree}} -> :ok
-      {:error, {:bad_cert, _reason}} -> :error
+      {:ok, {_public_key_info, _policy_tree}} -> true
+      {:error, {:bad_cert, _reason}} -> false
     end
   end
 
@@ -243,7 +252,7 @@ defmodule AlexaRequestVerifier do
     {:unknown, state}
   end
 
-  defp validate_cert_domain(error = {:error, _reason}) do
+  defp validate_cert_domain({:error, _reason} = error) do
     error
   end
 
@@ -294,7 +303,7 @@ defmodule AlexaRequestVerifier do
     end
   end
 
-  def is_datetime_valid?(datetime = %NaiveDateTime{}) do
+  def is_datetime_valid?(%NaiveDateTime{} = datetime) do
     # minimum number of seconds
     min = 150
     NaiveDateTime.diff(NaiveDateTime.utc_now(), datetime, :second) <= min
