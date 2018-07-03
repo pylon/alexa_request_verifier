@@ -18,10 +18,9 @@ defmodule AlexaRequestVerifier.CertCache do
   """
   @spec get_cert(cert_url :: String.t()) :: String.t() | nil
   def get_cert(cert_url) do
-    # check the cache before calling the server
     case :ets.lookup(@table, cert_url) do
       [{_url, cert}] -> cert
-      [] -> GenServer.call(@server, {:fetch, cert_url})
+      [] -> nil
     end
   end
 
@@ -42,16 +41,6 @@ defmodule AlexaRequestVerifier.CertCache do
   def init(_args) do
     :ets.new(@table, [:set, :protected, :named_table])
     {:ok, _state = nil}
-  end
-
-  def handle_call({:fetch, cert_url}, _from, state) do
-    data =
-      case :ets.lookup(@table, cert_url) do
-        [{_url, cert}] -> cert
-        [] -> nil
-      end
-
-    {:reply, data, state}
   end
 
   def handle_call({:store, cert_url, cert}, _from, state) do
