@@ -4,7 +4,7 @@ defmodule AlexaRequestVerifier.Mixfile do
   def project do
     [
       app: :pylon_alexa_request_verifier,
-      version: "0.1.5",
+      version: "0.1.6",
       elixir: "~> 1.6",
       build_embedded: Mix.env() == :prod,
       start_permanent: Mix.env() == :prod,
@@ -28,8 +28,9 @@ defmodule AlexaRequestVerifier.Mixfile do
 
   defp description do
     """
-    Alexa Request Verifier is a library that handles all of the certificate and
-    request verification for Alexa Requests for certified skills.
+    The Pylon Alexa Request Verifier is an updated fork of the
+    alexa_request_verifier library designed to handle all certificate and
+    request verification for Alexa skills.
     (See the Alexa Skills Documentation for more information).
     """
   end
@@ -56,7 +57,7 @@ defmodule AlexaRequestVerifier.Mixfile do
   defp package do
     [
       name: :pylon_alexa_request_verifier,
-      files: ["lib", "mix.exs", "priv", "README*", "LICENSE*"],
+      files: ["lib", "mix.exs", "README*", "LICENSE*"],
       maintainers: ["Josh Ziegler"],
       licenses: ["Apache 2.0"],
       links: %{"GitHub" => "https://github.com/pylon/alexa_request_verifier"}
