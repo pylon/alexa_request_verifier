@@ -1,0 +1,7 @@
+# erlang public_key functions are unknown because they're defined in a header
+# not included in the PLT by default
+:0: Unknown function public_key:pem_decode/1
+:0: Unknown function public_key:pkix_decode_cert/2
+:0: Unknown function public_key:pkix_path_validation/3
+:0: Unknown function public_key:pkix_verify_hostname/2
+:0: Unknown function public_key:verify/4
