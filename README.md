@@ -1,9 +1,9 @@
 # AlexaRequestVerifier
 
 ## Description
-The Pylon Alexa Request Verifier is an updated fork of [an older request verification library](https://github.com/grahac/alexa_request_verifier) that appears to be abandoned. As of June 28, 2018, Amazon switched to using their own certificate authority to sign requests, a change which broke this library. This updated version fixes that issue, along with bringing the library up to Elixir 1.6.
+The Pylon Alexa Request Verifier is an updated fork of [Charlie Graham's](https://github.com/grahac/alexa_request_verifier) library. As of June 28, 2018, Amazon switched to using their own certificate authority to sign requests, a change which broke this library. This updated version fixes that issue, along with bringing the library up to Elixir 1.6.
 
-This version also adds a new feature: the ability to verify an incoming request with a single function call instead of using the library's functionality as a `Plug`. To verify requests this way, follow steps 1-3 of the installation instructions below, but instead of installing the request verifier in your request pipeline, call this function using the incoming requests's connection:
+This version also adds a new feature: the ability to verify an incoming request with a single function call instead of registering the verifier as part of the request pipeline. To verify requests this way, follow steps 1-3 of the installation instructions below, but instead of performing step 4, call this function using the incoming request's connection:
 
 ```elixir
 AlexaRequestVerifier.verify_request(conn)
@@ -11,7 +11,7 @@ AlexaRequestVerifier.verify_request(conn)
 
 If verification fails, `conn.private[:alexa_verify_error]` will contain an error message.
 
-We now join the original project's README, already in progress...
+We now join the original project's README (plus a couple updates to reflect the new version), already in progress...
 
 ---
 
